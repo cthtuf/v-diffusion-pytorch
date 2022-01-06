@@ -3,19 +3,18 @@
 """Classifier-free guidance sampling from a diffusion model."""
 
 import argparse
-from functools import partial
 from pathlib import Path
+from datetime import datetime
 
 from PIL import Image
 import torch
-from torch import nn
 from torch.nn import functional as F
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 from tqdm import trange
 
 from CLIP import clip
-from diffusion import get_model, get_models, sampling, utils
+from diffusion import get_model, sampling, utils
 
 MODULE_DIR = Path(__file__).resolve().parent
 
@@ -35,8 +34,7 @@ def resize_and_center_crop(image, size):
     image = image.resize((int(fac * image.size[0]), int(fac * image.size[1])), Image.LANCZOS)
     return TF.center_crop(image, size[::-1])
 
-
-def main():
+def parse_args():
     p = argparse.ArgumentParser(description=__doc__,
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument('prompts', type=str, default=[], nargs='*',
@@ -65,6 +63,8 @@ def main():
                    help='the timestep to start at (used with init images)')
     p.add_argument('--steps', type=int, default=500,
                    help='the number of timesteps')
+    p.add_argument('--dimension', '-d', type=int, default=1,
+                   help='dimension of --size to model size')
     args = p.parse_args()
 
     if args.device:
@@ -72,6 +72,11 @@ def main():
     else:
         device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     print('Using device:', device)
+
+    return args, device
+
+
+def main(args, device):
 
     model = get_model(args.model)()
     _, side_y, side_x = model.shape
@@ -109,7 +114,7 @@ def main():
         clip_size = clip_model.visual.input_resolution
         img = resize_and_center_crop(img, (clip_size, clip_size))
         batch = TF.to_tensor(img)[None].to(device)
-        embed = F.normalize(clip_model.encode_image(normalize(batch)).float(), dim=-1)
+        embed = F.normalize(clip_model.encode_image(normalize(batch)).float(), dim=args.dimension)
         target_embeds.append(embed)
         weights.append(weight)
 
@@ -142,7 +147,7 @@ def main():
             cur_batch_size = min(n - i, batch_size)
             outs = run(x[i:i+cur_batch_size], steps)
             for j, out in enumerate(outs):
-                utils.to_pil_image(out).save(f'out_{i + j:05}.png')
+                utils.to_pil_image(out).save(f'{str(int(datetime.now().timestamp()))}_out_{i + j:05}.png')
 
     try:
         run_all(args.n, args.batch_size)
@@ -151,4 +156,10 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    args, device = parse_args()
+    if device == 'cpu':
+        main(args, device)
+    else:
+        with torch.no_grad():
+            main(args, device)
+            torch.cuda.empty_cache()
